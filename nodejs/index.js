@@ -66,24 +66,50 @@ const { EventEmitter } = require('events');
 const emitter = new EventEmitter();
 let emitterRunning = false
 
-emitter.on('start', () => {
+emitter.on('start', async () => {
 	if (emitterRunning) return;
 	emitterRunning = true;
 	console.log('Mechanism started');
-	dbQueue.find({}, function (err, docs) {
+	dbQueue.find({}, async function (err, docs) {
 		if (err) return console.log(err);
 		if (docs.length < 1) return emitterRunning = false;
 		console.log(docs[0])
 		const request = {
-			id: docs[0].id,
-			angle: docs[0].angle,
+			id: await docs[0].id,
+			angle: await docs[0].angle,
+			// results: [num, num, num]
 		}
-		mosquitto.publish('maturita', JSON.stringify(request))
-		return cleanup(docs)
+		mosquitto.publish('maturita', JSON.stringify(request), { retain: true });
+		dbQueue.update({ _id: docs[0]._id }, { status: "pending" });
+		setTimeout(function () {
+			// if taking longer than 10 mins hang up
+			if (docs[0].status === "pending") {
+				emitterRunning = false;
+				dbQueue.update({ _id: docs[0]._id }, { status: "queued" });
+			}
+		}, 600000);
+
+		
+		mosquitto.on('message', function (topic, message) {
+			let response = JSON.parse(message.toString())
+			if (response.id !== docs[0].id || !response.results) return;
+			console.log(response);
+			response.results = response.results.map(function (str) {
+				return str.split(',');
+			});
+			mosquitto.removeListener('message', postprocess(docs, response.results))
+		})
 	})
 });
 
+function postprocess(docs, results) {
+	// processing
+	
+	return cleanup(docs)
+}
+
 function cleanup(docs) {
+	docs[0].status = "done"
 	dbQueue.remove({ _id: docs[0]._id });
 	emitterRunning = false;
 	if (limiter.totalCount > 0) limiter.totalCount--
@@ -95,6 +121,8 @@ function cleanup(docs) {
 		return emitter.emit("start")
 	}, 3000)
 	
+	// sent message to channel ID
+	client?.channels?.cache?.get(docs[0].channelID)?.send('Results!');
 }
 
 client.on(Events.MessageCreate, async message => {
@@ -302,4 +330,31 @@ async function evalcall(args, message) {
 		console.error(err);
 		message.reply(`There was an error during evaluation. ᴇʀʀᴏʀ: \`${err}\``);
 	}
+}
+
+function Timer() {
+	this.running = false;
+	this.iv = 5000;
+	this.timeout = false;
+	this.cb = function () { };
+	this.start = function (cb, iv) {
+		var elm = this;
+		clearInterval(this.timeout);
+		this.running = true;
+		if (cb) this.cb = cb;
+		if (iv) this.iv = iv;
+		this.timeout = setTimeout(function () { elm.execute(elm); }, this.iv);
+	};
+	this.execute = function (e) {
+		if (!e.running) return false;
+		e.cb();
+		e.start();
+	};
+	this.stop = function () {
+		this.running = false;
+	};
+	this.set_interval = function (iv) {
+		clearInterval(this.timeout);
+		this.start(false, iv);
+	};
 }

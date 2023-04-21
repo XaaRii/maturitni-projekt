@@ -2,3 +2,4 @@ nodejs/node_modules
 .cfg.json
 .cfg2.json
 yarn.lock
+nodejs/*.db
