@@ -73,7 +73,12 @@ emitter.on('start', () => {
 	dbQueue.find({}, function (err, docs) {
 		if (err) return console.log(err);
 		if (docs.length < 1) return emitterRunning = false;
-		console.log(docs)
+		console.log(docs[0])
+		const request = {
+			id: docs[0].id,
+			angle: docs[0].angle,
+		}
+		mosquitto.publish('maturita', JSON.stringify(request))
 		return cleanup(docs)
 	})
 });
