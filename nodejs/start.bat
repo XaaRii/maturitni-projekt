@@ -12,6 +12,7 @@ IF EXIST %~dp0\nodejs\node.exe (
 if NOT exist node_modules call :missing
 :A
 cls
+set NODE_OPTIONS=--no-warnings
 node .
 echo.
 goto :A

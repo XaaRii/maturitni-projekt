@@ -27,6 +27,7 @@ for (const file of slashcmdFiles) {
 const rest = new REST({ version: '10' }).setToken(config.dcToken);
 const { exec } = require('child_process');
 const { inspect } = require('util');
+var mqttConnected = false, emitterRunning = false, awaitRun = false;
 
 client.on(Events.ClientReady, async () => {
 	console.info(`Logged in as ${client.user.tag}!`);
@@ -39,91 +40,92 @@ client.on(Events.ClientReady, async () => {
 		status: "dnd",
 	});
 	setTimeout(() => {
-		if (limiter.totalCount > 0) emitter.emit("start")
+		if (limiter.totalCount > 0) emitter.emit("start");
 	}, 4000);
+	setInterval(() => {
+		console.log(awaitRun, !emitterRunning)
+		if (awaitRun && !emitterRunning) emitter.emit("start");
+	}, 10000);
 });
 
 console.log("started connecting to mqtt...")
 mosquitto.on('connect', () => {
 	console.log("connected.")
+	mqttConnected = true;
 	mosquitto.subscribe(config.mqttTopic, function (err) {
 		if (err) {
 			throw console.error(err)
 		}
 		console.log("subscribed to the topic")
-		// mosquitto.publish('test', JSON.stringify(exampleJSON), {
-		//   retain: false, // will show as a latest message
-		// })
-		// console.log("json sent")
 	})
-})
-
-mosquitto.on('message', function (topic, message) {
-	console.log("message in topic \"" + topic + "\": " + message.toString())
+	dbQueue.update({ status: "pending" }, { $set: { status: "queued" } }, { multi: true });
 })
 
 const { EventEmitter } = require('events');
 const emitter = new EventEmitter();
-let emitterRunning = false
 
 emitter.on('start', async () => {
+	if (!mqttConnected) await new Promise(resolve => setTimeout(resolve, 30000));
+	if (!mqttConnected) throw "could not initially connect to MQTT server";
 	if (emitterRunning) return;
 	emitterRunning = true;
 	console.log('Mechanism started');
 	dbQueue.find({}, async function (err, docs) {
 		if (err) return console.log(err);
-		if (docs.length < 1) return emitterRunning = false;
+		if (docs.length < 1) {
+			awaitRun = false;
+			return emitterRunning = false;
+		}
+		awaitRun = true;
 		console.log(docs[0])
 		const request = {
 			id: await docs[0].id,
 			angle: await docs[0].angle,
 			// results: [num, num, num]
 		}
-		mosquitto.publish('maturita', JSON.stringify(request), { retain: true });
-		dbQueue.update({ _id: docs[0]._id }, { status: "pending" });
+		mosquitto.publish(config.mqttTopic, JSON.stringify(request), { retain: false });
+		dbQueue.update({ _id: docs[0]._id }, { $set: { status: "pending" } });
+
+		mosquitto.on('message', function (topic, message) {
+			var response = {};
+			try {
+				response = JSON.parse(message.toString());
+			} catch (e) {
+				return console.error("Error while parsing JSON!\n" + e);
+			}
+			if (response.id !== docs[0].id || !response.results) return;
+			console.log(response);
+			docs[0].results = response.results;
+			mosquitto.removeAllListeners('message');
+			console.log("cleanup triggered");
+			docs[0].status = "done";
+			dbQueue.remove({ _id: docs[0]._id });
+			emitterRunning = false;
+			if (limiter.totalCount > 0) limiter.totalCount--;
+			if (limiter[docs[0].author] > 0) limiter[docs[0].author]--;
+
+			// sent message to channel ID
+			const atc = new AttachmentBuilder(Buffer.from(`Experiment angle: ${response.angle}\n` + docs[0].results.join("\n"), 'utf-8'), { name: `results-${docs[0].id}.txt` });
+			const channel = client?.channels?.cache?.get(docs[0].channelID);
+			if (channel) channel.send({ content: "Your experiment finished! Here are your results:", files: [atc] });
+			else client?.channels?.cache?.get(config.defaultChannel)?.send({ content: `Experiment finished! Here are your results for angle ${docs[0].angle}:`, files: [atc] });
+			return;
+		})
+
 		setTimeout(function () {
 			// if taking longer than 10 mins hang up
 			if (docs[0].status === "pending") {
 				emitterRunning = false;
-				dbQueue.update({ _id: docs[0]._id }, { status: "queued" });
+				dbQueue.update({ _id: docs[0]._id }, { $set: { status: "queued" } });
+				console.log("updated DB: queued");
+				awaitRun = true;
+				mosquitto.removeAllListeners('message');
+				return;
 			}
 		}, 600000);
-
-		
-		mosquitto.on('message', function (topic, message) {
-			let response = JSON.parse(message.toString())
-			if (response.id !== docs[0].id || !response.results) return;
-			console.log(response);
-			response.results = response.results.map(function (str) {
-				return str.split(',');
-			});
-			mosquitto.removeListener('message', postprocess(docs, response.results))
-		})
 	})
 });
 
-function postprocess(docs, results) {
-	// processing
-	
-	return cleanup(docs)
-}
-
-function cleanup(docs) {
-	docs[0].status = "done"
-	dbQueue.remove({ _id: docs[0]._id });
-	emitterRunning = false;
-	if (limiter.totalCount > 0) limiter.totalCount--
-	if (limiter[docs[0].author] > 0) limiter[docs[0].author]--
-
-	setTimeout(() => {
-		// loop if needed
-		if (docs.length < 2) return;
-		return emitter.emit("start")
-	}, 3000)
-	
-	// sent message to channel ID
-	client?.channels?.cache?.get(docs[0].channelID)?.send('Results!');
-}
 
 client.on(Events.MessageCreate, async message => {
 	if (!message.content.toLowerCase().startsWith(prefix) || message.author.bot) return;
@@ -308,53 +310,4 @@ async function execcall(msgchannel, cmd) {
 			m.edit({ content: "Done! Here are the results:", files: [atc] });
 		} else m.edit({ content: "Done! Here are the results:\n" + stdout + stderr });
 	});
-}
-
-async function evalcall(args, message) {
-	let evaled;
-	try {
-		if (args[0] === "output") {
-			evaled = await eval(args.slice(1).join(' '));
-			if (evaled !== undefined) {
-				if (inspect(evaled).length >= 1970) {
-					const atc = new AttachmentBuilder(Buffer.from(inspect(evaled)), { name: 'eval.txt' });
-					message.channel.send({ content: "Evaluation too long, so instead i'll send a file containing result.:", files: [atc] });
-				} else message.channel.send(inspect(evaled));
-				console.log(inspect(evaled));
-			} else return message.channel.send("Evaluated.");
-		} else {
-			evaled = await eval(args.join(' '));
-		}
-	}
-	catch (err) {
-		console.error(err);
-		message.reply(`There was an error during evaluation. ᴇʀʀᴏʀ: \`${err}\``);
-	}
-}
-
-function Timer() {
-	this.running = false;
-	this.iv = 5000;
-	this.timeout = false;
-	this.cb = function () { };
-	this.start = function (cb, iv) {
-		var elm = this;
-		clearInterval(this.timeout);
-		this.running = true;
-		if (cb) this.cb = cb;
-		if (iv) this.iv = iv;
-		this.timeout = setTimeout(function () { elm.execute(elm); }, this.iv);
-	};
-	this.execute = function (e) {
-		if (!e.running) return false;
-		e.cb();
-		e.start();
-	};
-	this.stop = function () {
-		this.running = false;
-	};
-	this.set_interval = function (iv) {
-		clearInterval(this.timeout);
-		this.start(false, iv);
-	};
 }

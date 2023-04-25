@@ -26,7 +26,7 @@ const client = new Client({
 		username: config.mqttUsername, 
 		password: config.mqttPassword,
 		port: config.mqttPort,
-	    protocol: config.mqttProtocol,
+		protocol: config.mqttProtocol ?? "mqtt",
 		clean: true,
 		connectTimeout: 5000,
 		clientId: `bot-manager`,

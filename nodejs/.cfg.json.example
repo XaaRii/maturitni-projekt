@@ -1,0 +1,11 @@
+{
+    "dcToken": "",
+    "dcAppID": "",
+    "admins": ["303108947261259776"],
+    "prefix": "-",
+    "mqttServer": "",
+    "mqttPort": 1883,
+    "mqttTopic": "",
+    "mqttUsername": "",
+    "mqttPassword": ""
+}

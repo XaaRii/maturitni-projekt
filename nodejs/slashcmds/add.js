@@ -27,6 +27,7 @@ module.exports = {
 			angle: interaction.options.getString('angle'),
 			channelID: interaction.channelId,
 			id: interaction.id,
+			[results]: response.results
 			status: "queued" (in queue) || "pending" (waiting for response) || "done" (finished, waiting to be sent) || "completed" (sent to user)
 		} */
 
@@ -34,7 +35,7 @@ module.exports = {
 			author: authorID,
 			angle: angle,
 			channelID: interaction.channelId,
-			id: interaction.id,
+			id: Math.floor(10000000000000 + Math.random() * 90000000000000),
 			status: "queued"
 		}
 		dbQueue.insert(obj, async (err) => {
