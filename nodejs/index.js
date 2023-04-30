@@ -69,27 +69,28 @@ emitter.on('start', async () => {
 	if (!mqttConnected) throw "could not initially connect to MQTT server";
 	if (emitterRunning) return;
 	emitterRunning = true;
-	console.log('Mechanism started');
 	dbQueue.find({}, async function (err, docs) {
 		if (err) return console.log(err);
 		if (docs.length < 1) {
 			awaitRun = false;
-			return emitterRunning = false;
+			emitterRunning = false;
+			return;
 		}
 		awaitRun = true;
-		console.log(docs[0])
 		const request = {
 			id: await docs[0].id,
 			angle: await docs[0].angle,
-			// results: [num, num, num]
+			// results: ["num,num,num"]
 		}
 		mosquitto.publish(config.mqttTopic, JSON.stringify(request), { retain: false });
 		dbQueue.update({ _id: docs[0]._id }, { $set: { status: "pending" } });
+		docs[0].status = "pending";
+		console.log('Mechanism started: ' + docs[0]);
 
 		function timeoutPromise(time) {
 			return new Promise((resolve, reject) => {
 				setTimeout(() => {
-					reject("Timeout occurred");
+					resolve("fail");
 				}, time);
 			});
 		}
@@ -105,40 +106,38 @@ emitter.on('start', async () => {
 						return console.error("Error while parsing JSON!\n" + e);
 					}
 					if (response.id !== docs[0].id || !response.results) return;
-					console.log(response);
 					docs[0].results = response.results;
 					docs[0].angle2 = response.angle;
-					mosquitto.removeAllListeners('message');
-					resolve();
-				})		
+					resolve("success");
+				})
 			});
 		}
 
 		Promise.race([msgListener(), timeoutPromise(600000)])
-			.then(() => {
-				console.log("success!"); // Logs "Operation completed successfully" if it completes before the timeout
-				docs[0].status = "done";
-				dbQueue.remove({ _id: docs[0]._id });
-				emitterRunning = false;
-				if (limiter.totalCount > 0) limiter.totalCount--;
-				if (limiter[docs[0].author] > 0) limiter[docs[0].author]--;
-	
-				// sent message to channel ID
-				const atc = new AttachmentBuilder(Buffer.from(`Experiment angle: ${docs[0].angle2}\n` + docs[0].results.join("\n"), 'utf-8'), { name: `results-${docs[0].id}.txt` });
-				const channel = client?.channels?.cache?.get(docs[0].channelID);
-				if (channel) channel.send({ content: "Your experiment finished! Here are your results:", files: [atc] });
-				else client?.channels?.cache?.get(config.defaultChannel)?.send({ content: `Experiment finished! Here are your results for angle ${docs[0].angle}:`, files: [atc] });
-			})
-			.catch((error) => {
-				console.error(error); // Logs "Timeout occurred" if the operation takes more than 5 seconds to complete
-				if (docs[0].status === "pending") {
+			.then((promise) => {
+				mosquitto.removeAllListeners('message');
+				if (promise === "success") {
+					// console.log("success!");
+					docs[0].status = "done";
+					dbQueue.remove({ _id: docs[0]._id });
 					emitterRunning = false;
-					dbQueue.update({ _id: docs[0]._id }, { $set: { status: "queued" } });
-					console.log("updated DB: queued");
-					awaitRun = true;
-					mosquitto.removeAllListeners('message');
+					if (limiter.totalCount > 0) limiter.totalCount--;
+					if (limiter[docs[0].author] > 0) limiter[docs[0].author]--;
+
+					// sent message to channel ID
+					const atc = new AttachmentBuilder(Buffer.from(`Experiment angle: ${docs[0].angle2}\n` + docs[0].results.join("\n"), 'utf-8'), { name: `results-${docs[0].id}.txt` });
+					const channel = client?.channels?.cache?.get(docs[0].channelID);
+					if (channel) channel.send({ content: "Your experiment finished! Here are your results:", files: [atc] });
+					else client?.channels?.cache?.get(config.defaultChannel)?.send({ content: `Experiment finished! Here are your results for angle ${docs[0].angle}:`, files: [atc] });
+				} else {
+					console.error("Response timeout.");
+					if (docs[0].status === "pending") {
+						emitterRunning = false;
+						dbQueue.update({ _id: docs[0]._id }, { $set: { status: "queued" } });
+						awaitRun = true;
+					}
 				}
-			});
+			})
 	})
 });
 
