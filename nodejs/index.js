@@ -86,43 +86,59 @@ emitter.on('start', async () => {
 		mosquitto.publish(config.mqttTopic, JSON.stringify(request), { retain: false });
 		dbQueue.update({ _id: docs[0]._id }, { $set: { status: "pending" } });
 
-		mosquitto.on('message', function (topic, message) {
-			var response = {};
-			try {
-				response = JSON.parse(message.toString());
-			} catch (e) {
-				return console.error("Error while parsing JSON!\n" + e);
-			}
-			if (response.id !== docs[0].id || !response.results) return;
-			console.log(response);
-			docs[0].results = response.results;
-			mosquitto.removeAllListeners('message');
-			console.log("cleanup triggered");
-			docs[0].status = "done";
-			dbQueue.remove({ _id: docs[0]._id });
-			emitterRunning = false;
-			if (limiter.totalCount > 0) limiter.totalCount--;
-			if (limiter[docs[0].author] > 0) limiter[docs[0].author]--;
+		function timeoutPromise(time) {
+			return new Promise((resolve, reject) => {
+				setTimeout(() => {
+					reject("Timeout occurred");
+				}, time);
+			});
+		}
 
-			// sent message to channel ID
-			const atc = new AttachmentBuilder(Buffer.from(`Experiment angle: ${response.angle}\n` + docs[0].results.join("\n"), 'utf-8'), { name: `results-${docs[0].id}.txt` });
-			const channel = client?.channels?.cache?.get(docs[0].channelID);
-			if (channel) channel.send({ content: "Your experiment finished! Here are your results:", files: [atc] });
-			else client?.channels?.cache?.get(config.defaultChannel)?.send({ content: `Experiment finished! Here are your results for angle ${docs[0].angle}:`, files: [atc] });
-			return;
-		})
+		async function msgListener() {
+			return new Promise((resolve, reject) => {
+				// Some asynchronous operation
+				mosquitto.on('message', function (topic, message) {
+					var response = {};
+					try {
+						response = JSON.parse(message.toString());
+					} catch (e) {
+						return console.error("Error while parsing JSON!\n" + e);
+					}
+					if (response.id !== docs[0].id || !response.results) return;
+					console.log(response);
+					docs[0].results = response.results;
+					docs[0].angle2 = response.angle;
+					mosquitto.removeAllListeners('message');
+					resolve();
+				})		
+			});
+		}
 
-		setTimeout(function () {
-			// if taking longer than 10 mins hang up
-			if (docs[0].status === "pending") {
+		Promise.race([msgListener(), timeoutPromise(600000)])
+			.then(() => {
+				console.log("success!"); // Logs "Operation completed successfully" if it completes before the timeout
+				docs[0].status = "done";
+				dbQueue.remove({ _id: docs[0]._id });
 				emitterRunning = false;
-				dbQueue.update({ _id: docs[0]._id }, { $set: { status: "queued" } });
-				console.log("updated DB: queued");
-				awaitRun = true;
-				mosquitto.removeAllListeners('message');
-				return;
-			}
-		}, 600000);
+				if (limiter.totalCount > 0) limiter.totalCount--;
+				if (limiter[docs[0].author] > 0) limiter[docs[0].author]--;
+	
+				// sent message to channel ID
+				const atc = new AttachmentBuilder(Buffer.from(`Experiment angle: ${docs[0].angle2}\n` + docs[0].results.join("\n"), 'utf-8'), { name: `results-${docs[0].id}.txt` });
+				const channel = client?.channels?.cache?.get(docs[0].channelID);
+				if (channel) channel.send({ content: "Your experiment finished! Here are your results:", files: [atc] });
+				else client?.channels?.cache?.get(config.defaultChannel)?.send({ content: `Experiment finished! Here are your results for angle ${docs[0].angle}:`, files: [atc] });
+			})
+			.catch((error) => {
+				console.error(error); // Logs "Timeout occurred" if the operation takes more than 5 seconds to complete
+				if (docs[0].status === "pending") {
+					emitterRunning = false;
+					dbQueue.update({ _id: docs[0]._id }, { $set: { status: "queued" } });
+					console.log("updated DB: queued");
+					awaitRun = true;
+					mosquitto.removeAllListeners('message');
+				}
+			});
 	})
 });
 
