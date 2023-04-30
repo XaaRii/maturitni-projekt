@@ -1,5 +1,5 @@
 {
-  "name": "ivt-project",
+  "name": "maturita-project",
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
@@ -10,7 +10,6 @@
   "dependencies": {
     "console-stamp": "^3.0.6",
     "discord.js": "^14.9.0",
-    "lossless-json": "^2.0.8",
     "mqtt": "^4.3.7",
     "ms": "^2.1.3",
     "nedb": "^1.8.0"

@@ -8,4 +8,5 @@
     "mqttTopic": "",
     "mqttUsername": "",
     "mqttPassword": ""
+    "defaultChannel": ""
 }

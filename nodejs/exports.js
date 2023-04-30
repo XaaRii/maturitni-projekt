@@ -29,7 +29,6 @@ const client = new Client({
 		protocol: config.mqttProtocol ?? "mqtt",
 		clean: true,
 		connectTimeout: 5000,
-		clientId: `bot-manager`,
 	});
 
 var limiter = {

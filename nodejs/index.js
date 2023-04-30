@@ -25,8 +25,6 @@ for (const file of slashcmdFiles) {
 }
 
 const rest = new REST({ version: '10' }).setToken(config.dcToken);
-const { exec } = require('child_process');
-const { inspect } = require('util');
 var mqttConnected = false, emitterRunning = false, awaitRun = false;
 
 client.on(Events.ClientReady, async () => {
@@ -43,7 +41,7 @@ client.on(Events.ClientReady, async () => {
 		if (limiter.totalCount > 0) emitter.emit("start");
 	}, 4000);
 	setInterval(() => {
-		console.log(awaitRun, !emitterRunning)
+		// console.log(awaitRun, !emitterRunning)
 		if (awaitRun && !emitterRunning) emitter.emit("start");
 	}, 10000);
 });
@@ -85,7 +83,7 @@ emitter.on('start', async () => {
 		mosquitto.publish(config.mqttTopic, JSON.stringify(request), { retain: false });
 		dbQueue.update({ _id: docs[0]._id }, { $set: { status: "pending" } });
 		docs[0].status = "pending";
-		console.log('Mechanism started: ' + docs[0]);
+		console.log('Mechanism started: ' + JSON.stringify(docs[0]));
 
 		function timeoutPromise(time) {
 			return new Promise((resolve, reject) => {
@@ -127,8 +125,9 @@ emitter.on('start', async () => {
 					// sent message to channel ID
 					const atc = new AttachmentBuilder(Buffer.from(`Experiment angle: ${docs[0].angle2}\n` + docs[0].results.join("\n"), 'utf-8'), { name: `results-${docs[0].id}.txt` });
 					const channel = client?.channels?.cache?.get(docs[0].channelID);
-					if (channel) channel.send({ content: "Your experiment finished! Here are your results:", files: [atc] });
-					else client?.channels?.cache?.get(config.defaultChannel)?.send({ content: `Experiment finished! Here are your results for angle ${docs[0].angle}:`, files: [atc] });
+					const content = { content: `<@${docs[0].author}> Your experiment finished! Here are your results for angle ${docs[0].angle2}:`, files: [atc] }
+					if (channel) channel.send(content);
+					else client?.channels?.cache?.get(config.defaultChannel)?.send(content);
 				} else {
 					console.error("Response timeout.");
 					if (docs[0].status === "pending") {
@@ -148,12 +147,6 @@ client.on(Events.MessageCreate, async message => {
 	const commandName = args.shift().toLowerCase();
 
 	switch (commandName) {
-		case "rpicmd":
-			var cmd = args.join(' ').toString();
-			message.channel.sendTyping();
-			if (!config.admins.includes(message.author.id)) return message.reply("Error 404: Your perms not found.");
-			execcall(message.channel, cmd);
-			break;
 		case "refresh":
 			message.channel.sendTyping();
 			var commandFiles = fs.readdirSync('./commands').filter(file => file.endsWith('.js'));
@@ -186,10 +179,6 @@ client.on(Events.MessageCreate, async message => {
 						const x = require("./keepAlive.js");
 					});
 			}
-			break;
-		case "eval":
-			message.channel.sendTyping();
-			if (!config.admins.includes(message.author.id)) return message.channel.send("Error 404: Your perms not found.");
 			break;
 		case "deploy":
 			if (!config.admins.includes(message.author.id)) return message.channel.send("How about deploying yourself into a proper employment instead?");
@@ -313,16 +302,4 @@ async function splash() {
 
 					   Ishina Modules: Maturita Proj
 `);
-}
-
-async function execcall(msgchannel, cmd) {
-	const m = await msgchannel.send("Request sent.");
-	exec(cmd, function (error, stdout, stderr) {
-		if (!stdout) {
-			m.edit("Done.");
-		} else if (stdout.length >= 1950) {
-			const atc = new AttachmentBuilder(Buffer.from(stdout), { name: 'rpicmd.txt' });
-			m.edit({ content: "Done! Here are the results:", files: [atc] });
-		} else m.edit({ content: "Done! Here are the results:\n" + stdout + stderr });
-	});
 }
